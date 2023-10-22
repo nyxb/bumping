@@ -1,94 +1,98 @@
-import * as commandLineArgs from "command-line-args";
-import * as semver from "semver";
-import { isReleaseType } from "../release-type";
-import { VersionBumpOptions } from "../types/version-bump-options";
-import { ExitCode } from "./exit-code";
-import { usageText } from "./help";
+import process from 'node:process'
+import { valid as isValidVersion } from 'semver'
+import cac from 'cac'
+import c from 'picocolors'
+import { isReleaseType } from '../release-type'
+import type { VersionBumpOptions } from '../types/version-bump-options'
+import { version } from '../../package.json'
+import { bumpConfigDefaults, loadBumpConfig } from '../config'
+import { ExitCode } from './exit-code'
 
 /**
  * The parsed command-line arguments
  */
 export interface ParsedArgs {
-  help?: boolean;
-  version?: boolean;
-  quiet?: boolean;
-  options: VersionBumpOptions;
+  help?: boolean
+  version?: boolean
+  quiet?: boolean
+  options: VersionBumpOptions
 }
 
 /**
  * Parses the command-line arguments
  */
-export function parseArgs(argv: string[]): ParsedArgs {
+export async function parseArgs(): Promise<ParsedArgs> {
   try {
-    let args = commandLineArgs(
-      [
-        { name: "preid", type: String },
-        { name: "commit", alias: "c", type: String },
-        { name: "tag", alias: "t", type: String },
-        { name: "push", alias: "p", type: Boolean },
-        { name: "all", alias: "a", type: Boolean },
-        { name: "no-verify", type: Boolean },
-        { name: "quiet", alias: "q", type: Boolean },
-        { name: "version", alias: "v", type: Boolean },
-        { name: "help", alias: "h", type: Boolean },
-        { name: "ignore-scripts", type: Boolean },
-        { name: "files", type: String, multiple: true, defaultOption: true },
-      ],
-      { argv }
-    );
+    const cli = cac('bumping')
 
-    let parsedArgs: ParsedArgs = {
+    cli
+      .version(version)
+      .usage('[...files]')
+      .option('--preid <preid>', 'ID for prerelease')
+      .option('--all', `Include all files (default: ${bumpConfigDefaults.all})`)
+      .option('-c, --commit [msg]', `Commit message (default: ${bumpConfigDefaults.commit})`)
+      .option('--no-commit', 'Skip commit')
+      .option('-t, --tag [tag]', `Tag name (default: ${bumpConfigDefaults.tag})`)
+      .option('--no-tag', 'Skip tag')
+      .option('-p, --push', `Push to remote (default: ${bumpConfigDefaults.push})`)
+      .option('-y, --yes', `Skip confirmation (default: ${!bumpConfigDefaults.confirm})`)
+      .option('-r, --recursive', `Bump package.json files recursively (default: ${bumpConfigDefaults.recursive})`)
+      .option('--no-verify', 'Skip git verification')
+      .option('--ignore-scripts', `Ignore scripts (default: ${bumpConfigDefaults.ignoreScripts})`)
+      .option('-q, --quiet', 'Quiet mode')
+      .option('-v, --version <version>', 'Tagert version')
+      .option('-x, --execute <command>', 'Commands to execute after version bumps')
+      .help()
+
+    const result = cli.parse()
+    const args = result.options
+
+    const parsedArgs: ParsedArgs = {
       help: args.help as boolean,
       version: args.version as boolean,
       quiet: args.quiet as boolean,
-      options: {
-        preid: args.preid as string,
-        commit: args.commit as string | boolean,
-        tag: args.tag as string | boolean,
-        push: args.push as boolean,
-        all: args.all as boolean,
-        noVerify: args["no-verify"] as boolean,
-        files: args.files as string[],
-        ignoreScripts: args["ignore-scripts"] as boolean,
-      }
-    };
-
-    // If --preid is used without an argument, then throw an error, since it's probably a mistake.
-    // If they want to use the default value ("beta"), then they should not pass the argument at all
-    if (args.preid === null) {
-      throw new Error("The --preid option requires a value, such as \"alpha\", \"beta\", etc.");
-    }
-
-    // If --commit is used without an argument, then treat it as a boolean flag
-    if (args.commit === null) {
-      parsedArgs.options.commit = true;
-    }
-
-    // If --tag is used without an argument, then treat it as a boolean flag
-    if (args.tag === null) {
-      parsedArgs.options.tag = true;
+      options: await loadBumpConfig({
+        preid: args.preid,
+        commit: !args.noCommit && args.commit,
+        tag: !args.noTag && args.tag,
+        push: args.push,
+        all: args.all,
+        confirm: !args.yes,
+        noVerify: !args.verify,
+        files: [...(args['--'] || []), ...result.args],
+        ignoreScripts: args.ignoreScripts,
+        execute: args.execute,
+        recursive: !!args.recursive,
+      }),
     }
 
     // If a version number or release type was specified, then it will mistakenly be added to the "files" array
     if (parsedArgs.options.files && parsedArgs.options.files.length > 0) {
-      let firstArg = parsedArgs.options.files[0];
+      const firstArg = parsedArgs.options.files[0]
 
-      if (firstArg === "prompt" || isReleaseType(firstArg) || semver.valid(firstArg)) {
-        parsedArgs.options.release = firstArg;
-        parsedArgs.options.files.shift();
+      if (firstArg === 'prompt' || isReleaseType(firstArg) || isValidVersion(firstArg)) {
+        parsedArgs.options.release = firstArg
+        parsedArgs.options.files.shift()
       }
     }
 
-    return parsedArgs;
+    if (parsedArgs.options.recursive) {
+      if (parsedArgs.options.files?.length)
+        console.log(c.yellow('The --recursive option is ignored when files are specified'))
+
+      else
+        parsedArgs.options.files = ['package.json', 'package-lock.json', 'packages/**/package.json']
+    }
+
+    return parsedArgs
   }
   catch (error) {
     // There was an error parsing the command-line args
-    return errorHandler(error as Error);
+    return errorHandler(error as Error)
   }
 }
 
 function errorHandler(error: Error): never {
-  console.error(error.message);
-  console.error(usageText);
-  return process.exit(ExitCode.InvalidArgument);
+  console.error(error.message)
+  return process.exit(ExitCode.InvalidArgument)
 }
